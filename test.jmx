@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Test Plan">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+    </TestPlan>
+    <hashTree>
+      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener">
+        <stringProp name="scriptLanguage">groovy</stringProp>
+        <stringProp name="parameters"></stringProp>
+        <stringProp name="filename"></stringProp>
+        <stringProp name="cacheKey">true</stringProp>
+        <stringProp name="script">import java.net.URL
+import java.net.HttpURLConnection
+
+// Collect JMeter metrics
+def label        = prev.getSampleLabel()
+def responseTime = prev.getTime()
+def success      = prev.isSuccessful()
+def threadCount  = ctx.getThreadGroup().getNumberOfThreads()
+def timeStamp    = System.currentTimeMillis()
+
+def tps = responseTime &gt; 0 ? (1000.0 / responseTime) : 0.0
+def errorPct = success ? 0.0 : 100.0
+
+def json = &quot;&quot;&quot;{
+  &quot;label&quot;: &quot;${label}&quot;,
+  &quot;activeThreads&quot;: ${threadCount},
+  &quot;tps&quot;: ${tps},
+  &quot;avgResponseTime&quot;: ${responseTime},
+  &quot;errorPct&quot;: ${errorPct},
+  &quot;timestamp&quot;: ${timeStamp}
+}&quot;&quot;&quot;
+
+try {
+    def url = new URL(&quot;http://localhost:5000/metrics&quot;)
+    def conn = url.openConnection() as HttpURLConnection
+    conn.setDoOutput(true)
+    conn.setRequestMethod(&quot;POST&quot;)
+    conn.setRequestProperty(&quot;Content-Type&quot;, &quot;application/json&quot;)
+
+    conn.outputStream.withWriter(&quot;UTF-8&quot;) { it.write(json) }
+
+    log.info(&quot;Posted metrics: &quot; + json)
+    log.info(&quot;Response code: &quot; + conn.responseCode)
+
+    conn.disconnect()
+} catch (Exception e) {
+    log.error(&quot;Error sending metrics&quot;, e)
+}
+</stringProp>
+      </JSR223Listener>
+      <hashTree/>
+      <BeanShellListener guiclass="TestBeanGUI" testclass="BeanShellListener" testname="BeanShell Listener" enabled="false">
+        <boolProp name="resetInterpreter">false</boolProp>
+        <stringProp name="parameters"></stringProp>
+        <stringProp name="filename"></stringProp>
+        <stringProp name="script">import java.net.*;
+import java.io.*;
+import org.apache.jmeter.samplers.SampleResult;
+
+// Collect dynamic values from JMeter context
+String label        = prev.getSampleLabel();                 // Sampler label
+long responseTime   = prev.getTime();                        // Response time in ms
+boolean success     = prev.isSuccessful();                   // Pass/Fail
+int threadCount     = ctx.getThreadGroup().getNumberOfThreads(); // Active threads
+long timeStamp      = System.currentTimeMillis();            // Current time
+
+// Simple TPS calculation (samples/sec) using elapsed time
+double tps = 0.0;
+if (responseTime &gt; 0) {
+    tps = 1000.0 / responseTime;   // 1 request / responseTime(ms)
+}
+
+// Error percentage (0 or 100 for single request basis)
+double errorPct = success ? 0.0 : 100.0;
+
+// Build JSON payload
+String json = &quot;{&quot;
+    + &quot;\&quot;label\&quot;:\&quot;&quot; + label + &quot;\&quot;,&quot;
+    + &quot;\&quot;activeThreads\&quot;:&quot; + threadCount + &quot;,&quot;
+    + &quot;\&quot;tps\&quot;:&quot; + tps + &quot;,&quot;
+    + &quot;\&quot;avgResponseTime\&quot;:&quot; + responseTime + &quot;,&quot;
+    + &quot;\&quot;errorPct\&quot;:&quot; + errorPct + &quot;,&quot;
+    + &quot;\&quot;timestamp\&quot;:&quot; + timeStamp
+    + &quot;}&quot;;
+
+try {
+    // Target Python Flask endpoint
+    URL url = new URL(&quot;http://localhost:5000/metrics&quot;);
+    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    conn.setDoOutput(true);
+    conn.setRequestMethod(&quot;POST&quot;);
+    conn.setRequestProperty(&quot;Content-Type&quot;, &quot;application/json&quot;);
+
+    // Send JSON
+    OutputStream os = conn.getOutputStream();
+    os.write(json.getBytes(&quot;UTF-8&quot;));
+    os.flush();
+    os.close();
+
+    // Read response
+    int code = conn.getResponseCode();
+    log.info(&quot;Metrics POSTed: &quot; + json);
+    log.info(&quot;Server response code: &quot; + code);
+
+    conn.disconnect();
+} catch (Exception e) {
+    log.error(&quot;Error sending metrics: &quot; + e.getMessage());
+}
+</stringProp>
+      </BeanShellListener>
+      <hashTree/>
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="Summary Report" enabled="false">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+      <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree" enabled="false">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
+        <intProp name="ThreadGroup.num_threads">20</intProp>
+        <intProp name="ThreadGroup.ramp_time">1</intProp>
+        <longProp name="ThreadGroup.duration">60</longProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller">
+          <intProp name="LoopController.loops">-1</intProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Home">
+          <stringProp name="HTTPSampler.domain">www.googleapissss.com</stringProp>
+          <stringProp name="HTTPSampler.protocol">https</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+        <TestAction guiclass="TestActionGui" testclass="TestAction" testname="Flow Control Action" enabled="true">
+          <intProp name="ActionProcessor.action">1</intProp>
+          <intProp name="ActionProcessor.target">0</intProp>
+          <stringProp name="ActionProcessor.duration">3000</stringProp>
+        </TestAction>
+        <hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Login" enabled="true">
+          <stringProp name="HTTPSampler.domain">www.opencart.com</stringProp>
+          <stringProp name="HTTPSampler.protocol">https</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+      </hashTree>
+      <ResultCollector guiclass="GraphVisualizer" testclass="ResultCollector" testname="Graph Results" enabled="false">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
