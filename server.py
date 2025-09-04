@@ -6,7 +6,40 @@ import math
 
 app = Flask(__name__)
 DB_FILE = "jmeter_metrics.db"
+def jmeter_percentile(data, percentile):
+    n = len(data)
+    if n == 0:
+        return 0
+    data_sorted = sorted(data)
+    # JMeter nearest-rank method: ceil(p/100 * n)
+    rank = math.ceil((percentile / 100) * n)
+    rank = max(1, min(rank, n))  # clamp between 1 and n
+    return data_sorted[rank - 1]  # convert to 0-based index
+def custom_percentile(data, percentile):
+    n = len(data)
+    if n == 0:
+        return 0
+    data_sorted = sorted(data)
+    raw_rank = (percentile / 100) * n
+    
+    if percentile == 90:
+        # floor for 90th percentile
+        rank = math.floor(raw_rank)
+    else:
+        # ceil for others
+        rank = math.ceil(raw_rank)
 
+    # adjust for 1-based rank
+    rank = max(1, min(rank, n))
+    return data_sorted[rank - 1]
+def jmeter_median(data):
+    n = len(data)
+    if n == 0:
+        return 0
+    data_sorted = sorted(data)
+    # JMeter takes ceil(n/2)
+    rank = math.ceil(n / 2)
+    return data_sorted[rank - 1]
 # --------- DB ----------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -112,7 +145,7 @@ def api_aggregate():
         agg[lab]["timestamps"].append(ts)
         if succ == 0:
             agg[lab]["errors"] += 1
-
+    
     res = []
     for lab, d in agg.items():
         s = sorted(d["samples"])
@@ -120,10 +153,14 @@ def api_aggregate():
         avg = round(sum(s)/count, 2) if count else 0
         mn = s[0] if s else 0
         mx = s[-1] if s else 0
-        median = round(statistics.median(s), 2) if s else 0
-        p90 = round(percentile(s, 90),2) if s else 0
-        p95 = round(percentile(s, 95),2) if s else 0
-        p99 = round(percentile(s, 99),2) if s else 0
+        # median = round(statistics.median(s), 2) if s else 0
+        # p90 = round(percentile(s, 90),2) if s else 0
+        # p95 = round(percentile(s, 95),2) if s else 0
+        # p99 = round(percentile(s, 99),2) if s else 0
+        median=jmeter_median(s)
+        p90=custom_percentile(s,90)
+        p95=jmeter_percentile(s,95)
+        p99=jmeter_percentile(s,99)
         errors = d["errors"]
         err_pct = round((errors/count)*100,2) if count else 0
         # Throughput and KB/sec calculations
@@ -504,7 +541,7 @@ def dashboard():
         </div>
       </div>
 
-      <div class="col-lg-6">
+      <div class="col-lg-12">
         <div class="card p-3">
           <div class="d-flex justify-content-between mb-2">
             <h5>Errors</h5>
@@ -519,7 +556,7 @@ def dashboard():
 
       <div class="col-lg-6">
         <div class="card p-3">
-          <div class="d-flex justify-content-between mb-2">
+          <div class="d-flex justify-content-between mb-3">
             <h5>Successful Transactions</h5>
           </div>
           <table id="succTable" class="table table-sm table-hover">

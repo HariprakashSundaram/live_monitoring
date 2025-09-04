@@ -57,13 +57,96 @@ try {
         <collectionProp name="Arguments.arguments">
           <elementProp name="test_id" elementType="Argument">
             <stringProp name="Argument.name">test_id</stringProp>
-            <stringProp name="Argument.value">TestDryRun</stringProp>
+            <stringProp name="Argument.value">TestDryRun12</stringProp>
             <stringProp name="Argument.metadata">=</stringProp>
           </elementProp>
         </collectionProp>
       </Arguments>
       <hashTree/>
-      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener">
+      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener working finall with non http">
+        <stringProp name="scriptLanguage">groovy</stringProp>
+        <stringProp name="parameters"></stringProp>
+        <stringProp name="filename"></stringProp>
+        <stringProp name="cacheKey">true</stringProp>
+        <stringProp name="script">import java.net.URL
+import java.net.HttpURLConnection
+
+// Collect JMeter metrics
+def label        = prev.getSampleLabel()
+def responseTime = prev.getTime()
+def success      = prev.isSuccessful() ? 1 : 0
+def threadCount  = ctx.getThreadGroup().getNumberOfThreads()
+def timeStamp    = (System.currentTimeMillis() / 1000).toLong()
+
+def tps = responseTime &gt; 0 ? (1000.0 / responseTime) : 0.0
+def errorPct = success ? 0.0 : 100.0
+def status_code = prev.getResponseCode()
+def received_bytes = prev.getBytes()
+def sent_bytes = prev.getSentBytes()
+def test_id = vars.get(&quot;test_id&quot;) ?: &quot;TestRun_&quot; + new Date().format(&quot;yyyyMMdd_HHmmss&quot;)
+
+// Decide whether to include error_message
+def includeErrorMessage = false
+def error_message = &quot;&quot;
+if (!prev.isSuccessful()) {
+    // Rule 1: Skip if it&apos;s the HttpHostConnectException
+    if (
+
+    	  !(status_code.contains(&quot;Non HTTP response code: org.apache.http.conn.HttpHostConnectException&quot;)) ||
+       !(status_code.contains(&quot;Non HTTP response code: java.io.InterruptedIOException&quot;))
+       ) {
+        def msg = prev.getResponseMessage() ?: &quot;&quot;
+        // Rule 2: Only include if &lt;= 30 words
+        def wordCount = msg.trim().isEmpty() ? 0 : msg.trim().split(/\s+/).length
+        if (wordCount &lt;= 30) {
+            includeErrorMessage = true
+            error_message = msg
+        }
+    }
+}
+
+// Build JSON safely
+def sb = new StringBuilder()
+sb.append(&quot;{&quot;)
+sb.append(&quot;\&quot;label\&quot;:\&quot;${label}\&quot;,&quot;)
+sb.append(&quot;\&quot;thread_count\&quot;:${threadCount},&quot;)
+sb.append(&quot;\&quot;success\&quot;:${success},&quot;)
+sb.append(&quot;\&quot;tps\&quot;:${tps},&quot;)
+sb.append(&quot;\&quot;response_time\&quot;:${responseTime},&quot;)
+sb.append(&quot;\&quot;errorPct\&quot;:${errorPct},&quot;)
+sb.append(&quot;\&quot;timestamp\&quot;:${timeStamp},&quot;)
+sb.append(&quot;\&quot;status_code\&quot;:\&quot;${status_code}\&quot;,&quot;)
+sb.append(&quot;\&quot;received_bytes\&quot;:${received_bytes},&quot;)
+sb.append(&quot;\&quot;sent_bytes\&quot;:${sent_bytes},&quot;)
+sb.append(&quot;\&quot;test_id\&quot;:\&quot;${test_id}\&quot;&quot;)
+
+if (includeErrorMessage) {
+    sb.append(&quot;,\&quot;error_message\&quot;:\&quot;${error_message.replaceAll(&apos;&quot;&apos;, &apos;\\&quot;&apos;)}\&quot;&quot;)
+}
+
+sb.append(&quot;}&quot;)
+def json = sb.toString()
+
+try {
+    def url = new URL(&quot;http://localhost:5000/metrics&quot;)
+    def conn = url.openConnection() as HttpURLConnection
+    conn.setDoOutput(true)
+    conn.setRequestMethod(&quot;POST&quot;)
+    conn.setRequestProperty(&quot;Content-Type&quot;, &quot;application/json&quot;)
+
+    conn.outputStream.withWriter(&quot;UTF-8&quot;) { it.write(json) }
+
+    log.info(&quot;Posted metrics: &quot; + json)
+    log.info(&quot;Response code: &quot; + conn.responseCode)
+
+    conn.disconnect()
+} catch (Exception e) {
+    log.error(&quot;Error sending metrics&quot;, e)
+}
+</stringProp>
+      </JSR223Listener>
+      <hashTree/>
+      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener working finall without non http" enabled="false">
         <stringProp name="scriptLanguage">groovy</stringProp>
         <stringProp name="parameters"></stringProp>
         <stringProp name="filename"></stringProp>
@@ -251,7 +334,7 @@ try {
             <connectTime>true</connectTime>
           </value>
         </objProp>
-        <stringProp name="filename"></stringProp>
+        <stringProp name="filename">try.jtl</stringProp>
       </ResultCollector>
       <hashTree/>
       <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree">
@@ -295,18 +378,18 @@ try {
         <intProp name="ThreadGroup.num_threads">2</intProp>
         <intProp name="ThreadGroup.ramp_time">1</intProp>
         <longProp name="ThreadGroup.duration">60</longProp>
-        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
-        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">false</boolProp>
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller">
-          <intProp name="LoopController.loops">-1</intProp>
+          <stringProp name="LoopController.loops">10</stringProp>
           <boolProp name="LoopController.continue_forever">false</boolProp>
         </elementProp>
       </ThreadGroup>
       <hashTree>
         <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Home">
-          <stringProp name="HTTPSampler.domain">www.google.com</stringProp>
-          <stringProp name="HTTPSampler.protocol">https</stringProp>
+          <stringProp name="HTTPSampler.domain">localhost</stringProp>
+          <stringProp name="HTTPSampler.port">8088</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
           <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
           <stringProp name="HTTPSampler.method">GET</stringProp>
           <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
@@ -323,6 +406,18 @@ try {
         </TestAction>
         <hashTree/>
         <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Login">
+          <stringProp name="HTTPSampler.domain">www.google.com</stringProp>
+          <stringProp name="HTTPSampler.protocol">https</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Login" enabled="true">
           <stringProp name="HTTPSampler.domain">www.google.com</stringProp>
           <stringProp name="HTTPSampler.protocol">https</stringProp>
           <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
