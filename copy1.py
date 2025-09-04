@@ -192,19 +192,20 @@ def api_aggregate():
 # --------- TPS per second endpoint ----------
 @app.route("/api/tps", methods=["GET"])
 def api_tps():
-    # optional window size n seconds (default last 60 seconds)
     window = request.args.get("window", default=60, type=int)
     end = request.args.get("end", type=int) or int(time.time())
     start = end - window + 1
-    rows = run_query("SELECT timestamp, COUNT(*) FROM jmeter_samples WHERE timestamp BETWEEN ? AND ? GROUP BY timestamp ORDER BY timestamp ASC", (start, end))
-    # build continuous time series for window
+    test_id = request.args.get("test_id")
+    if test_id:
+        rows = run_query("SELECT timestamp, COUNT(*) FROM jmeter_samples WHERE timestamp BETWEEN ? AND ? AND test_id=? GROUP BY timestamp ORDER BY timestamp ASC", (start, end, test_id))
+    else:
+        rows = run_query("SELECT timestamp, COUNT(*) FROM jmeter_samples WHERE timestamp BETWEEN ? AND ? GROUP BY timestamp ORDER BY timestamp ASC", (start, end))
     ts_map = {r[0]: r[1] for r in rows}
     labels = []
     values = []
     for sec in range(start, end+1):
         labels.append(sec)
         values.append(ts_map.get(sec, 0))
-    # return as human timestamps (seconds) and values
     return jsonify({
         "timestamps": labels,
         "tps": values
@@ -448,11 +449,11 @@ def dashboard():
   </style>
 </head>
 <body>
-  <h2>Live monitoring</h2>
+  <h2>Live Monitoring</h2>
   <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-3">
       
-      <br>
+      <br> 
       <div>
         <label class="me-2">Auto-refresh:</label>
         <select id="refreshSelect" class="form-select d-inline-block w-auto me-3">
@@ -597,6 +598,16 @@ def dashboard():
           <div id="rangeDisplaySucc" class="text-secondary small mt-2 text-end"></div>
         </div>
       </div>
+      <!-- Total TPS (all labels) chart, full width -->
+<div class="col-12">
+  <div class="card p-3">
+    <div class="d-flex justify-content-between">
+      <h5>Total TPS (All Labels)</h5>
+    </div>
+    <canvas id="totalTpsChart" height="160"></canvas>
+    <div id="rangeDisplayTotalTps" class="text-secondary small mt-2 text-end"></div>
+  </div>
+</div>
       <div class="col-12 text-end">
         <a id="downloadSnapshot" class="btn btn-outline-primary">Download Hard-coded HTML Snapshot</a>
       </div>
@@ -716,6 +727,21 @@ let respTimeChart = new Chart(document.getElementById('respTimeChart'), {
     }
   }
 });
+let totalTpsChart = new Chart(document.getElementById('totalTpsChart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Total TPS',
+      data: [],
+      borderColor: 'orange',
+      backgroundColor: 'rgba(255,165,0,0.1)',
+      borderWidth: 3,
+      tension: 0.3,
+      pointRadius: 2
+    }]
+  }
+});
 
   // ---------- Data Params ----------
   function getRangeParams() {
@@ -768,7 +794,8 @@ let respTimeChart = new Chart(document.getElementById('respTimeChart'), {
 
   async function loadTPS() {
     const { start, end, duration, mode } = getRangeParams();
-    let url = '/api/tps?';
+    const testId = $('#testIdSelect').val();
+    let url = '/api/total_tps?';
     if (mode === 'duration') {
         url += 'window=' + duration + '&end=' + end;
     } else if (mode === 'range') {
@@ -776,6 +803,7 @@ let respTimeChart = new Chart(document.getElementById('respTimeChart'), {
     } else {
         url += 'window=60';
     }
+    if (testId) url += '&test_id=' + encodeURIComponent(testId);
     const resp = await fetch(url);
     const data = await resp.json();
     const tz = $('#tzSelect').val();
@@ -894,7 +922,23 @@ async function loadRespTime() {
     tbody.append(`<tr><td>${r.label}</td><td>${r.status}</td><td>${r.count}</td><td>${r.message||''}</td></tr>`);
   });
   }
-
+  async function loadTotalTPS() {
+  const { start, end, duration, mode, tz } = getRangeParams();
+  let url = '/api/total_tps?';
+  if (mode === 'duration') {
+      url += 'window=' + duration + '&end=' + end;
+  } else if (mode === 'range') {
+      url += 'window=' + Math.max(60, end - start + 1) + '&end=' + end;
+  } else {
+      url += 'window=60';
+  }
+  const resp = await fetch(url);
+  const data = await resp.json();
+  totalTpsChart.data.labels = data.timestamps.map(s => moment.unix(s).tz(tz).format('HH:mm:ss A'));
+  totalTpsChart.data.datasets[0].data = data.tps;
+  totalTpsChart.update();
+  $('#rangeDisplayTotalTps').text($('#rangeDisplayAgg').text());
+}
   async function loadSuccess() {
     const {start,end} = getRangeParams();
     const testId = getTestId();
@@ -911,7 +955,10 @@ async function loadRespTime() {
   async function refreshAll() {
     $('#loadingStatus span').hide();
     updateRangeDisplays();                                
-    await Promise.all([loadTPS(), loadThreads(), loadErrorPct(), loadAggregate(), loadErrors(), loadSuccess(), loadRespTime()]);
+    await Promise.all([
+  loadTPS(), loadThreads(), loadErrorPct(), loadAggregate(),
+  loadErrors(), loadSuccess(), loadRespTime(), loadTotalTPS(),loadTPS()
+  ]);
     setAutoRefresh(parseInt($('#refreshSelect').val()));
     $('#loadingStatus span').show();
     setTimeout(() => { $('#loadingStatus span').fadeOut(); }, 2000); // Hide after 2 seconds
@@ -986,6 +1033,7 @@ async function loadRespTime() {
     $('#rangeDisplayThreads').text(rangeText);
     $('#rangeDisplayErrorPct').text(rangeText);
     $('#rangeDisplayRespTime').text(rangeText);
+    $('#rangeDisplayTotalTps').text(rangeText);
 }
 
   // Initial load
@@ -1048,57 +1096,23 @@ def api_response_times():
 
     return jsonify(grouped)
 
-# def api_response_times():
-#     test_id = request.args.get("test_id", "default")
-#     label = request.args.get("label")
-#     start = request.args.get("start", type=int)
-#     end = request.args.get("end", type=int)
-#     conds = ["test_id = ?"]
-#     params = [test_id]
-#     if label:
-#         conds.append("label = ?")
-#         params.append(label)
-#     if start:
-#         conds.append("timestamp >= ?")
-#         params.append(start)
-#     if end:
-#         conds.append("timestamp <= ?")
-#         params.append(end)
-#     where = " AND ".join(conds)
-#     q = f"SELECT timestamp, response_time FROM jmeter_samples WHERE {where} ORDER BY timestamp ASC"
-#     rows = run_query(q, tuple(params))
-#     timestamps = [r[0] for r in rows]
-#     response_times = [r[1] for r in rows]
-#     return jsonify({"timestamps": timestamps, "response_times": response_times})
-
-
-#     test_id = request.args.get("test_id", "default")
-#     start = request.args.get("start", type=int)
-#     end = request.args.get("end", type=int)
-#     conds = ["test_id = ?"]
-#     params = [test_id]
-#     if start:
-#         conds.append("timestamp >= ?")
-#         params.append(start)
-#     if end:
-#         conds.append("timestamp <= ?")
-#         params.append(end)
-#     where = " AND ".join(conds)
-#     q = f"""
-#         SELECT label,
-#                COUNT(*) as count,
-#                ROUND(AVG(response_time),2) as avg,
-#                MIN(response_time) as min,
-#                MAX(response_time) as max,
-#                ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY response_time),2) as p90
-#         FROM jmeter_samples
-#         WHERE {where} AND success = 1
-#         GROUP BY label
-#     """
-#     rows = run_query(q, tuple(params))
-#     result = [{"label": r[0], "count": r[1], "avg": r[2], "min": r[3], "max": r[4], "p90": r[5]} for r in rows]
-#     return jsonify(result)
-
+@app.route("/api/total_tps", methods=["GET"])
+def api_total_tps():
+    window = request.args.get("window", default=60, type=int)
+    end = request.args.get("end", type=int) or int(time.time())
+    start = end - window + 1
+    rows = run_query("SELECT timestamp, COUNT(*) FROM jmeter_samples WHERE timestamp BETWEEN ? AND ? GROUP BY timestamp ORDER BY timestamp ASC", (start, end))
+    print("Total TPS rows:", rows)  # Add this line
+    ts_map = {r[0]: r[1] for r in rows}
+    labels = []
+    values = []
+    for sec in range(start, end+1):
+        labels.append(sec)
+        values.append(ts_map.get(sec, 0))
+    return jsonify({
+        "timestamps": labels,
+        "tps": values
+    })
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=5000, debug=True)
