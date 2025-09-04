@@ -1,4 +1,4 @@
-# jmeter_dashboard.py
+# jmeter_dashboard.py copy 2
 from flask import Flask, request, jsonify, render_template_string, send_file, make_response
 import sqlite3, time, statistics, csv, io, json
 from datetime import datetime
@@ -235,14 +235,13 @@ def api_threads():
 def api_errors():
     start = request.args.get("start", type=int)
     end = request.args.get("end", type=int)
-    test_id = request.args.get("test_id", "default")
     q = """
     SELECT label, status_code, COUNT(*), GROUP_CONCAT(DISTINCT error_message)
     FROM jmeter_samples
-    WHERE success=0 AND test_id=?
+    WHERE success=0
     """
     conds = []
-    params = [test_id]
+    params = []
     if start:
         conds.append("timestamp >= ?"); params.append(start)
     if end:
@@ -254,40 +253,27 @@ def api_errors():
     result = [{"label": r[0], "status": r[1], "count": r[2], "message": r[3] or ""} for r in rows]
     return jsonify(result)
 
+# --------- Success transactions endpoint ----------
 @app.route("/api/success", methods=["GET"])
 def api_success():
+    # supply start,end optional
     start = request.args.get("start", type=int)
     end = request.args.get("end", type=int)
-    test_id = request.args.get("test_id", "default")
     q = """
-    SELECT label, response_time
-    FROM jmeter_samples WHERE success=1 AND test_id=?
+    SELECT label, COUNT(*), AVG(response_time), MIN(response_time), MAX(response_time)
+    FROM jmeter_samples WHERE success=1
     """
     conds = []
-    params = [test_id]
+    params = []
     if start:
         conds.append("timestamp >= ?"); params.append(start)
     if end:
         conds.append("timestamp <= ?"); params.append(end)
     if conds:
         q += " AND " + " AND ".join(conds)
+    q += " GROUP BY label ORDER BY COUNT(*) DESC"
     rows = run_query(q, tuple(params))
-    # Group by label
-    label_map = {}
-    for r in rows:
-        label = r[0]
-        rt = r[1]
-        if label not in label_map:
-            label_map[label] = []
-        label_map[label].append(rt)
-    result = []
-    for label, samples in label_map.items():
-        count = len(samples)
-        avg = round(sum(samples)/count,2) if count else 0
-        mn = min(samples) if samples else 0
-        mx = max(samples) if samples else 0
-        p90 = custom_percentile(samples, 90) if samples else 0
-        result.append({"label": label, "count": count, "avg": avg, "min": mn, "max": mx, "p90": p90})
+    result = [{"label": r[0], "count": r[1], "avg": round(r[2],2), "min": r[3], "max": r[4]} for r in rows]
     return jsonify(result)
 
 # --------- Download CSV endpoints ----------
@@ -567,15 +553,14 @@ def dashboard():
           <div id="rangeDisplayErr" class="text-secondary small mt-2 text-end"></div>
         </div>
       </div>
-      
 
-      <div class="col-lg-12">
+      <div class="col-lg-6">
         <div class="card p-3">
           <div class="d-flex justify-content-between mb-3">
             <h5>Successful Transactions</h5>
           </div>
           <table id="succTable" class="table table-sm table-hover">
-            <thead><tr><th>Label</th><th>Count</th><th>Avg</th><th>Min</th><th>Max</th><th>90p</th></tr></thead>
+            <thead><tr><th>Label</th><th>Count</th><th>Avg</th><th>Min</th><th>Max</th></tr></thead>
             <tbody></tbody>
           </table>
           <div id="rangeDisplaySucc" class="text-secondary small mt-2 text-end"></div>
@@ -805,28 +790,26 @@ def dashboard():
                                 
 
   async function loadErrors() {
-  const {start,end} = getRangeParams();
-  const testId = getTestId();
-  let url = '/api/errors?test_id=' + encodeURIComponent(testId) + '&';
-  if(start) url += 'start=' + start + '&';
-  if(end) url += 'end=' + end + '&';
-  const data = await (await fetch(url)).json();
-  const tbody = $('#errTable tbody').empty();
-  data.forEach(r => {
-    tbody.append(`<tr><td>${r.label}</td><td>${r.status}</td><td>${r.count}</td><td>${r.message||''}</td></tr>`);
-  });
+    const {start,end} = getRangeParams();
+    let url = '/api/errors?';
+    if(start) url += 'start=' + start + '&';
+    if(end) url += 'end=' + end + '&';
+    const data = await (await fetch(url)).json();
+    const tbody = $('#errTable tbody').empty();
+    data.forEach(r => {
+      tbody.append(`<tr><td>${r.label}</td><td>${r.status}</td><td>${r.count}</td><td>${r.message||''}</td></tr>`);
+    });
   }
 
   async function loadSuccess() {
     const {start,end} = getRangeParams();
-    const testId = getTestId();
-    let url = '/api/success?test_id=' + encodeURIComponent(testId) + '&';
+    let url = '/api/success?';
     if(start) url += 'start=' + start + '&';
     if(end) url += 'end=' + end + '&';
     const data = await (await fetch(url)).json();
     const tbody = $('#succTable tbody').empty();
-    data.forEach r => {
-      tbody.append(`<tr><td>${r.label}</td><td>${r.count}</td><td>${r.avg}</td><td>${r.min}</td><td>${r.max}</td><td>${r.p90}</td></tr>`);
+    data.forEach(r => {
+      tbody.append(`<tr><td>${r.label}</td><td>${r.count}</td><td>${r.avg}</td><td>${r.min}</td><td>${r.max}</td></tr>`);
     });
   }
 
@@ -842,13 +825,18 @@ def dashboard():
   // ---------- Auto-refresh ----------
   let autoHandle = null;
   function setAutoRefresh(seconds) {
-  if(autoHandle) { clearInterval(autoHandle); autoHandle = null; }
-  if(seconds > 0) {
-    $('#autoStatus').show();
-    autoHandle = setInterval(refreshAll, seconds * 1000);
-  } else {
-    $('#autoStatus').hide();
-  }
+    if(autoHandle) { clearInterval(autoHandle); autoHandle = null; }
+    if(seconds > 0) {
+      const { start, end, duration } = getRangeParams();
+      if(start && !end && !duration) {
+        $('#autoStatus').show();
+        autoHandle = setInterval(refreshAll, seconds * 1000);
+      } else {
+        $('#autoStatus').hide();
+      }
+    } else {
+      $('#autoStatus').hide();
+    }
   }
   setAutoRefresh(parseInt($('#refreshSelect').val()));
 
@@ -934,7 +922,6 @@ $(document).ready(function() {
 def api_testids():
     rows = run_query("SELECT DISTINCT test_id FROM jmeter_samples")
     return jsonify([r[0] for r in rows])
-
 
 if __name__ == "__main__":
     init_db()

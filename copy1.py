@@ -1,4 +1,4 @@
-# jmeter_dashboard.py
+# jmeter_dashboard.py copy 1
 from flask import Flask, request, jsonify, render_template_string, send_file, make_response
 import sqlite3, time, statistics, csv, io, json
 from datetime import datetime
@@ -492,6 +492,12 @@ def dashboard():
         <select id="testIdSelect" class="form-select form-select-sm" style="width:auto;display:inline-block;">
           <!-- Options will be populated dynamically -->
         </select>
+
+        <!-- Add for label filter -->
+        <label for="labelSelect" class="form-label me-2">Label:</label>
+        <select id="labelSelect" class="form-select form-select-sm" style="width:auto;display:inline-block;">
+          <option value="">All</option>
+        </select>
         </div>
     </div>
 
@@ -524,6 +530,16 @@ def dashboard():
           <div id="rangeDisplayErrorPct" class="text-secondary small mt-2 text-end"></div>
         </div>
       </div>                              
+
+      <div class="col-lg-6">
+        <div class="card p-3">
+          <div class="d-flex justify-content-between">
+            <h5>Response Time (ms)</h5>
+          </div>
+          <canvas id="respTimeChart" height="160"></canvas>
+          <div id="rangeDisplayRespTime" class="text-secondary small mt-2 text-end"></div>
+        </div>
+      </div>
 
       <div class="col-12">
         <div class="card p-3">
@@ -560,8 +576,8 @@ def dashboard():
           <div class="d-flex justify-content-between mb-2">
             <h5>Errors</h5>
           </div>
-          <table id="errTable" class="table table-sm table-hover">
-            <thead><tr><th>Label</th><th>Status</th><th>Count</th><th>Messages</th></tr></thead>
+          <table id="errTable" class="table table-stripped table-bordered">
+            <thead class="table-dark"><tr><th>Label</th><th>Status</th><th>Count</th><th>Messages</th></tr></thead>
             <tbody></tbody>
           </table>
           <div id="rangeDisplayErr" class="text-secondary small mt-2 text-end"></div>
@@ -574,8 +590,8 @@ def dashboard():
           <div class="d-flex justify-content-between mb-3">
             <h5>Successful Transactions</h5>
           </div>
-          <table id="succTable" class="table table-sm table-hover">
-            <thead><tr><th>Label</th><th>Count</th><th>Avg</th><th>Min</th><th>Max</th><th>90p</th></tr></thead>
+          <table id="succTable" class="table table-stripped table-bordered">
+            <thead class="table-dark"><tr><th>Label</th><th>Count</th><th>Avg</th><th>Min</th><th>Max</th><th>90p</th></tr></thead>
             <tbody></tbody>
           </table>
           <div id="rangeDisplaySucc" class="text-secondary small mt-2 text-end"></div>
@@ -677,6 +693,29 @@ def dashboard():
     }]
   }
 });
+let respTimeChart = new Chart(document.getElementById('respTimeChart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Response Time',
+      data: [],
+      borderColor: 'purple',
+      backgroundColor: 'rgba(128,0,128,0.1)',
+      borderWidth: 2,
+      tension: 0.3
+    }]
+  },
+  options: {
+    scales: {
+      x: { ticks: { maxRotation: 45 } },
+      y: {
+        beginAtZero: true,
+        title: { display: true, text: "ms" }
+      }
+    }
+  }
+});
 
   // ---------- Data Params ----------
   function getRangeParams() {
@@ -755,7 +794,46 @@ def dashboard():
     threadChart.data.datasets[0].data = data.threads;
     threadChart.update();
   }
-  
+async function loadRespTime() {
+  const { start, end, tz } = getRangeParams();
+  const testId = $('#testIdSelect').val();
+  const params = new URLSearchParams();
+  params.append('test_id', testId);
+  if (start) params.append('start', start);
+  if (end) params.append('end', end);
+
+  const resp = await fetch('/api/response_times?' + params.toString());
+  const data = await resp.json();
+
+  // Clear old datasets
+  respTimeChart.data.labels = [];
+  respTimeChart.data.datasets = [];
+
+  const colors = ['red','blue','green','orange','purple','brown','teal','pink'];
+  let colorIdx = 0;
+
+  for (const [label, values] of Object.entries(data)) {
+    const timestamps = values.timestamps.map(s => moment.unix(s).tz(tz).format('HH:mm:ss A'));
+    if (respTimeChart.data.labels.length === 0) {
+      // Use first label’s timestamps for x-axis
+      respTimeChart.data.labels = timestamps;
+    }
+    respTimeChart.data.datasets.push({
+      label: label,
+      data: values.response_times,
+      borderColor: colors[colorIdx % colors.length],
+      backgroundColor: colors[colorIdx % colors.length] + '33', // translucent fill
+      borderWidth: 2,
+      tension: 0.3,
+      pointRadius: 1
+    });
+    colorIdx++;
+  }
+
+  respTimeChart.update();
+  $('#rangeDisplayRespTime').text($('#rangeDisplayAgg').text());
+}
+
 
     function getTestId() {
     return $('#testIdSelect').val();
@@ -825,7 +903,7 @@ def dashboard():
     if(end) url += 'end=' + end + '&';
     const data = await (await fetch(url)).json();
     const tbody = $('#succTable tbody').empty();
-    data.forEach r => {
+    data.forEach(r => {
       tbody.append(`<tr><td>${r.label}</td><td>${r.count}</td><td>${r.avg}</td><td>${r.min}</td><td>${r.max}</td><td>${r.p90}</td></tr>`);
     });
   }
@@ -833,7 +911,7 @@ def dashboard():
   async function refreshAll() {
     $('#loadingStatus span').hide();
     updateRangeDisplays();                                
-    await Promise.all([loadTPS(), loadThreads(), loadErrorPct(), loadAggregate(), loadErrors(), loadSuccess()]);
+    await Promise.all([loadTPS(), loadThreads(), loadErrorPct(), loadAggregate(), loadErrors(), loadSuccess(), loadRespTime()]);
     setAutoRefresh(parseInt($('#refreshSelect').val()));
     $('#loadingStatus span').show();
     setTimeout(() => { $('#loadingStatus span').fadeOut(); }, 2000); // Hide after 2 seconds
@@ -907,6 +985,7 @@ def dashboard():
     $('#rangeDisplaySucc').text(rangeText);
     $('#rangeDisplayThreads').text(rangeText);
     $('#rangeDisplayErrorPct').text(rangeText);
+    $('#rangeDisplayRespTime').text(rangeText);
 }
 
   // Initial load
@@ -935,6 +1014,90 @@ def api_testids():
     rows = run_query("SELECT DISTINCT test_id FROM jmeter_samples")
     return jsonify([r[0] for r in rows])
 
+
+@app.route("/api/response_times", methods=["GET"])
+def api_response_times():
+    test_id = request.args.get("test_id", "default")
+    start = request.args.get("start", type=int)
+    end = request.args.get("end", type=int)
+    conds = ["test_id = ?"]
+    params = [test_id]
+    if start:
+        conds.append("timestamp >= ?")
+        params.append(start)
+    if end:
+        conds.append("timestamp <= ?")
+        params.append(end)
+    where = " AND ".join(conds)
+
+    q = f"""
+        SELECT label, timestamp, response_time
+        FROM jmeter_samples
+        WHERE {where}
+        ORDER BY timestamp ASC
+    """
+    rows = run_query(q, tuple(params))
+
+    # Group by label
+    grouped = {}
+    for label, ts, rt in rows:
+        if label not in grouped:
+            grouped[label] = {"timestamps": [], "response_times": []}
+        grouped[label]["timestamps"].append(ts)
+        grouped[label]["response_times"].append(rt)
+
+    return jsonify(grouped)
+
+# def api_response_times():
+#     test_id = request.args.get("test_id", "default")
+#     label = request.args.get("label")
+#     start = request.args.get("start", type=int)
+#     end = request.args.get("end", type=int)
+#     conds = ["test_id = ?"]
+#     params = [test_id]
+#     if label:
+#         conds.append("label = ?")
+#         params.append(label)
+#     if start:
+#         conds.append("timestamp >= ?")
+#         params.append(start)
+#     if end:
+#         conds.append("timestamp <= ?")
+#         params.append(end)
+#     where = " AND ".join(conds)
+#     q = f"SELECT timestamp, response_time FROM jmeter_samples WHERE {where} ORDER BY timestamp ASC"
+#     rows = run_query(q, tuple(params))
+#     timestamps = [r[0] for r in rows]
+#     response_times = [r[1] for r in rows]
+#     return jsonify({"timestamps": timestamps, "response_times": response_times})
+
+
+#     test_id = request.args.get("test_id", "default")
+#     start = request.args.get("start", type=int)
+#     end = request.args.get("end", type=int)
+#     conds = ["test_id = ?"]
+#     params = [test_id]
+#     if start:
+#         conds.append("timestamp >= ?")
+#         params.append(start)
+#     if end:
+#         conds.append("timestamp <= ?")
+#         params.append(end)
+#     where = " AND ".join(conds)
+#     q = f"""
+#         SELECT label,
+#                COUNT(*) as count,
+#                ROUND(AVG(response_time),2) as avg,
+#                MIN(response_time) as min,
+#                MAX(response_time) as max,
+#                ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY response_time),2) as p90
+#         FROM jmeter_samples
+#         WHERE {where} AND success = 1
+#         GROUP BY label
+#     """
+#     rows = run_query(q, tuple(params))
+#     result = [{"label": r[0], "count": r[1], "avg": r[2], "min": r[3], "max": r[4], "p90": r[5]} for r in rows]
+#     return jsonify(result)
 
 if __name__ == "__main__":
     init_db()
