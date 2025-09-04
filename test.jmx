@@ -5,11 +5,9 @@
       <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
         <collectionProp name="Arguments.arguments"/>
       </elementProp>
-      <boolProp name="TestPlan.functional_mode">false</boolProp>
-      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
     </TestPlan>
     <hashTree>
-      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener">
+      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener working" enabled="false">
         <stringProp name="scriptLanguage">groovy</stringProp>
         <stringProp name="parameters"></stringProp>
         <stringProp name="filename"></stringProp>
@@ -41,6 +39,73 @@ try {
     def conn = url.openConnection() as HttpURLConnection
     conn.setDoOutput(true)
     conn.setRequestMethod(&quot;POST&quot;)
+    conn.setRequestProperty(&quot;Content-Type&quot;, &quot;application/json&quot;)
+
+    conn.outputStream.withWriter(&quot;UTF-8&quot;) { it.write(json) }
+
+    log.info(&quot;Posted metrics: &quot; + json)
+    log.info(&quot;Response code: &quot; + conn.responseCode)
+
+    conn.disconnect()
+} catch (Exception e) {
+    log.error(&quot;Error sending metrics&quot;, e)
+}
+</stringProp>
+      </JSR223Listener>
+      <hashTree/>
+      <Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="test_id" elementType="Argument">
+            <stringProp name="Argument.name">test_id</stringProp>
+            <stringProp name="Argument.value">TestDryRun</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+        </collectionProp>
+      </Arguments>
+      <hashTree/>
+      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="JSR223 Listener">
+        <stringProp name="scriptLanguage">groovy</stringProp>
+        <stringProp name="parameters"></stringProp>
+        <stringProp name="filename"></stringProp>
+        <stringProp name="cacheKey">true</stringProp>
+        <stringProp name="script">import java.net.URL
+import java.net.HttpURLConnection
+
+// Collect JMeter metrics
+def label        = prev.getSampleLabel()
+def responseTime = prev.getTime()
+def success      = prev.isSuccessful()? 1: 0
+def threadCount  = ctx.getThreadGroup().getNumberOfThreads()
+def timeStamp    = (System.currentTimeMillis() / 1000).toLong()
+
+def tps = responseTime &gt; 0 ? (1000.0 / responseTime) : 0.0
+def errorPct = success ? 0.0 : 100.0
+def status_code = prev.getResponseCode()
+def error_message = prev.isSuccessful() ? &quot;&quot; : prev.getResponseMessage()
+def received_bytes = prev.getBytes()
+def sent_bytes = prev.getSentBytes()
+def test_id = vars.get(&quot;test_id&quot;) ?: &quot;TestRun_&quot; + new Date().format(&quot;yyyyMMdd_HHmmss&quot;)
+def json = &quot;&quot;&quot;{
+  &quot;label&quot;: &quot;${label}&quot;,
+  &quot;thread_count&quot;: ${threadCount},
+  &quot;success&quot;: ${success},
+  &quot;tps&quot;: ${tps},
+  &quot;response_time&quot;: ${responseTime},
+  &quot;errorPct&quot;: ${errorPct},
+  &quot;timestamp&quot;: ${timeStamp},
+  &quot;status_code&quot;: &quot;${status_code}&quot;,
+  &quot;error_message&quot;: &quot;${error_message}&quot;,
+  &quot;received_bytes&quot;: ${received_bytes},
+  &quot;sent_bytes&quot;: ${sent_bytes},
+  &quot;test_id&quot;: &quot;${test_id}&quot;
+}&quot;&quot;&quot;
+
+
+try {
+    def url = new URL(&quot;http://localhost:5000/metrics&quot;)
+    def conn = url.openConnection() as HttpURLConnection
+    conn.setDoOutput(true)
+    conn.setRequestMethod(&quot;POST&quot;) 
     conn.setRequestProperty(&quot;Content-Type&quot;, &quot;application/json&quot;)
 
     conn.outputStream.withWriter(&quot;UTF-8&quot;) { it.write(json) }
@@ -189,7 +254,7 @@ try {
         <stringProp name="filename"></stringProp>
       </ResultCollector>
       <hashTree/>
-      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree" enabled="false">
+      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree">
         <boolProp name="ResultCollector.error_logging">false</boolProp>
         <objProp>
           <name>saveConfig</name>
@@ -226,8 +291,8 @@ try {
         <stringProp name="filename"></stringProp>
       </ResultCollector>
       <hashTree/>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group" enabled="true">
-        <intProp name="ThreadGroup.num_threads">20</intProp>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
+        <intProp name="ThreadGroup.num_threads">2</intProp>
         <intProp name="ThreadGroup.ramp_time">1</intProp>
         <longProp name="ThreadGroup.duration">60</longProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
@@ -239,8 +304,8 @@ try {
         </elementProp>
       </ThreadGroup>
       <hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Home" enabled="true">
-          <stringProp name="HTTPSampler.domain">www.googleapissss.com</stringProp>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Home">
+          <stringProp name="HTTPSampler.domain">www.google.com</stringProp>
           <stringProp name="HTTPSampler.protocol">https</stringProp>
           <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
           <stringProp name="HTTPSampler.method">GET</stringProp>
@@ -257,8 +322,8 @@ try {
           <stringProp name="ActionProcessor.duration">3000</stringProp>
         </TestAction>
         <hashTree/>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Login" enabled="true">
-          <stringProp name="HTTPSampler.domain">www.opencart.com</stringProp>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Login">
+          <stringProp name="HTTPSampler.domain">www.google.com</stringProp>
           <stringProp name="HTTPSampler.protocol">https</stringProp>
           <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
           <stringProp name="HTTPSampler.method">GET</stringProp>

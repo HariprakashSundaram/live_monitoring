@@ -14,13 +14,16 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS jmeter_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp INTEGER,          -- epoch seconds
+            timestamp INTEGER,
             label TEXT,
             response_time REAL,
-            success INTEGER,            -- 1 or 0
+            success INTEGER,
             thread_count INTEGER,
             status_code TEXT,
-            error_message TEXT
+            error_message TEXT,
+            received_bytes REAL,
+            sent_bytes REAL,
+            test_id TEXT                -- Add this column
         )
     """)
     conn.commit()
@@ -37,37 +40,29 @@ def run_query(q, params=()):
 # --------- Ingest endpoint (JMeter posts here) ----------
 @app.route("/metrics", methods=["POST"])
 def receive_metrics():
-    data = request.json
-    if not data:
-        return jsonify({"error": "no json"}), 400
-
-    # Accept either aggregated or per-sample; try to be flexible
-    label = data.get("label", data.get("sampler", "ALL"))
-    # priority: explicit responseTime, avgResponseTime, else try sample fields
-    rt = data.get("responseTime", data.get("avgResponseTime", data.get("avg", 0.0)))
-    # determine success: if there's an "errorPct" >0 consider failure; if "success" present use it
-    success = 1
-    if "success" in data:
-        success = 1 if data.get("success") else 0
-    elif "errorPct" in data:
-        success = 0 if data.get("errorPct", 0) > 0 else 1
-    # status code & error message if provided
-    status_code = str(data.get("statusCode", data.get("rc", "200")))
-    error_message = data.get("errorMessage", data.get("errorMsg", "")) if not success else ""
-    thread_count = int(data.get("activeThreads", data.get("threads", 0)))
-
-    ts = int(time.time())
-
+    data = request.get_json(force=True)
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO jmeter_samples (timestamp, label, response_time, success, thread_count, status_code, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (ts, label, float(rt), success, thread_count, status_code, error_message))
+        INSERT INTO jmeter_samples (
+            timestamp, label, response_time, success, thread_count,
+            status_code, error_message, received_bytes, sent_bytes, test_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data.get("timestamp"),
+        data.get("label"),
+        data.get("response_time"),
+        data.get("success"),
+        data.get("thread_count"),
+        data.get("status_code"),
+        data.get("error_message"),
+        data.get("received_bytes", 0),
+        data.get("sent_bytes", 0),
+        data.get("test_id", "default")
+    ))
     conn.commit()
     conn.close()
-
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok"})
 
 # --------- Helper: compute percentiles safely ----------
 def percentile(sorted_list, pct):
@@ -85,31 +80,36 @@ def percentile(sorted_list, pct):
 # --------- Aggregate endpoint ----------
 @app.route("/api/aggregate", methods=["GET"])
 def api_aggregate():
-    # optional filters: label, start,end (epoch seconds), timezone ignored here (frontend handles)
-    label = request.args.get("label")
+    test_id = request.args.get("test_id", "default")
     start = request.args.get("start", type=int)
     end = request.args.get("end", type=int)
-    q = "SELECT label, response_time, success FROM jmeter_samples"
-    conds = []
-    params = []
-    if label:
-        conds.append("label = ?")
-        params.append(label)
+    conds = ["test_id = ?"]
+    params = [test_id]
     if start:
         conds.append("timestamp >= ?")
         params.append(start)
     if end:
         conds.append("timestamp <= ?")
         params.append(end)
-    if conds:
-        q += " WHERE " + " AND ".join(conds)
+    where = " AND ".join(conds)
+    q = f"SELECT label, response_time, success, received_bytes, sent_bytes, timestamp FROM jmeter_samples WHERE {where}"
     rows = run_query(q, tuple(params))
-    print("Aggregate query:", q, params, "Rows:", len(rows))  # Add this line for debugging
+    print("Aggregate query:", q, params, "Rows:", len(rows))  # Debug
+
     agg = {}
-    for lab, rt, succ in rows:
+    for lab, rt, succ, recv, sent, ts in rows:
         if lab not in agg:
-            agg[lab] = {"samples": [], "errors": 0}
+            agg[lab] = {
+                "samples": [],
+                "errors": 0,
+                "received_bytes": 0,
+                "sent_bytes": 0,
+                "timestamps": []
+            }
         agg[lab]["samples"].append(rt)
+        agg[lab]["received_bytes"] += recv if recv else 0
+        agg[lab]["sent_bytes"] += sent if sent else 0
+        agg[lab]["timestamps"].append(ts)
         if succ == 0:
             agg[lab]["errors"] += 1
 
@@ -120,23 +120,34 @@ def api_aggregate():
         avg = round(sum(s)/count, 2) if count else 0
         mn = s[0] if s else 0
         mx = s[-1] if s else 0
+        median = round(statistics.median(s), 2) if s else 0
         p90 = round(percentile(s, 90),2) if s else 0
         p95 = round(percentile(s, 95),2) if s else 0
         p99 = round(percentile(s, 99),2) if s else 0
         errors = d["errors"]
         err_pct = round((errors/count)*100,2) if count else 0
+        # Throughput and KB/sec calculations
+        timestamps = d["timestamps"]
+        duration = (max(timestamps) - min(timestamps) + 1) if timestamps else 1
+        throughput = round(count / duration, 5) if duration > 0 else 0
+        received_kb_sec = round((d["received_bytes"] / 1024) / duration, 2) if duration > 0 else 0
+        sent_kb_sec = round((d["sent_bytes"] / 1024) / duration, 2) if duration > 0 else 0
         res.append({
+            "test_id": test_id,
             "label": lab,
             "count": count,
             "avg": avg,
+            "median": median,
             "min": mn,
             "max": mx,
             "pct90": p90,
             "pct95": p95,
             "pct99": p99,
-            "error_pct": err_pct
+            "error_pct": err_pct,
+            "throughput": throughput,
+            "received_kb_sec": received_kb_sec,
+            "sent_kb_sec": sent_kb_sec
         })
-    # sort by count desc
     res = sorted(res, key=lambda x: x["count"], reverse=True)
     return jsonify(res)
 
@@ -425,7 +436,12 @@ def dashboard():
 
         <button id="resetRange" class="btn btn-outline-secondary btn-sm">Reset</button>
         <span id="autoStatus" class="badge bg-info ms-2" style="display:none;">Auto-refresh ON</span>
-      </div>
+        <!-- Add this inside your dashboard controls section -->
+        <label for="testIdSelect" class="form-label me-2">TestId:</label>
+        <select id="testIdSelect" class="form-select form-select-sm" style="width:auto;display:inline-block;">
+          <!-- Options will be populated dynamically -->
+        </select>
+        </div>
     </div>
 
     <div class="row g-3">
@@ -464,12 +480,26 @@ def dashboard():
             <h5>Aggregate Report</h5>
           </div>
           <table id="aggTable" class="table table-striped table-bordered">
-            <thead class="table-dark">
-              <tr><th>Label</th><th>Count</th><th>Avg</th><th>Min</th><th>Max</th>
-              <th>90%</th><th>95%</th><th>99%</th><th>Error %</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+  <thead class="table-dark">
+    <tr>
+      <th>TestId</th>
+      <th>Label</th>
+      <th>Count</th>
+      <th>Avg</th>
+      <th>Median</th>
+      <th>Min</th>
+      <th>Max</th>
+      <th>90%</th>
+      <th>95%</th>
+      <th>99%</th>
+      <th>Error %</th>
+      <th>Throughput</th>
+      <th>Received KB/sec</th>
+      <th>Sent KB/sec</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
           <div id="rangeDisplayAgg" class="text-secondary small mt-2 text-end"></div>
         </div>
       </div>
@@ -674,32 +704,16 @@ def dashboard():
     threadChart.update();
   }
   
-  async function loadAggregate2() {
-    const {start,end} = getRangeParams();
-    const label = $('#labelFilter').val();
-    let url = '/api/aggregate?';
-    if(label) url += 'label=' + encodeURIComponent(label) + '&';
-    if(start) url += 'start=' + start + '&';
-    if(end) url += 'end=' + end + '&';
-    const data = await (await fetch(url)).json();
-    const tbody = $('#aggTable tbody').empty();
-    data.forEach(r => {
-      tbody.append(`<tr>
-        <td>${r.label}</td><td>${r.count}</td><td>${r.avg}</td><td>${r.min}</td><td>${r.max}</td>
-        <td>${r.pct90}</td><td>${r.pct95}</td><td>${r.pct99}</td><td>${r.error_pct}</td>
-      </tr>`);
-    });
-    if(!$.fn.dataTable.isDataTable('#aggTable')) {
-      $('#aggTable').DataTable({ "order": [[1, "desc"]], "pageLength": 10 });
+
+    function getTestId() {
+    return $('#testIdSelect').val();
     }
-  }
 
     async function loadAggregate() {
-    const {start, end, duration} = getRangeParams();
-    const label = $('#labelFilter').val();
+    const { start, end } = getRangeParams();
+    const testId = getTestId();
     const params = new URLSearchParams();
-
-    if (label) params.append('label', label);
+    params.append('test_id', testId);
     if (start) params.append('start', start);
     if (end) params.append('end', end);
 
@@ -707,16 +721,32 @@ def dashboard():
     const data = await resp.json();
 
     // Initialize DataTable only once
+    let table;
     if (!$.fn.dataTable.isDataTable('#aggTable')) {
-        $('#aggTable').DataTable({ order: [[1, "desc"]], pageLength: 10 });
+        table = $('#aggTable').DataTable({ order: [[2, "desc"]], pageLength: 10 });
+    } else {
+        table = $('#aggTable').DataTable();
+        table.clear();
     }
-    const table = $('#aggTable').DataTable();
-    table.clear();
+
+    // Use DataTables API to add rows
     data.forEach(r => {
-        table.row.add([
-            r.label, r.count, r.avg, r.min, r.max,
-            r.pct90, r.pct95, r.pct99, r.error_pct
-        ]);
+      table.row.add([
+        r.test_id,
+        r.label,
+        r.count,
+        r.avg,
+        r.median,
+        r.min,
+        r.max,
+        r.pct90,
+        r.pct95,
+        r.pct99,
+        r.error_pct,
+        r.throughput,
+        r.received_kb_sec,
+        r.sent_kb_sec
+      ]);
     });
     table.draw();
 }
@@ -832,12 +862,29 @@ def dashboard():
 
   // Initial load
   $(document).ready(function(){ refreshAll(); setTimeout(refreshAll, 1000); });
+  async function loadTestIds() {
+    const resp = await fetch('/api/testids');
+    const testIds = await resp.json();
+    const sel = $('#testIdSelect').empty();
+    testIds.forEach(id => {
+        sel.append(`<option value="${id}">${id}</option>`);
+    });
+}
+$(document).ready(function() {
+    loadTestIds();
+    // ...other init code...
+});
 </script>
 
 </body>
 </html>
     """, labels=labels)
     return html
+
+@app.route("/api/testids", methods=["GET"])
+def api_testids():
+    rows = run_query("SELECT DISTINCT test_id FROM jmeter_samples")
+    return jsonify([r[0] for r in rows])
 
 if __name__ == "__main__":
     init_db()
