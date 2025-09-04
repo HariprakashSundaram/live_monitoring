@@ -6,6 +6,8 @@ import math
 
 app = Flask(__name__)
 DB_FILE = "jmeter_metrics.db"
+
+
 def jmeter_percentile(data, percentile):
     n = len(data)
     if n == 0:
@@ -62,13 +64,18 @@ def init_db():
     conn.commit()
     conn.close()
 
-def run_query(q, params=()):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(q, params)
-    rows = c.fetchall()
+def run_query(query, params=()):
+    conn = sqlite3.connect("jmeter_metrics.db")
+    cur = conn.cursor()
+    cur.execute(query, params)
+    if query.strip().upper().startswith("SELECT"):
+        rows = cur.fetchall()
+    else:
+        rows = []
+    conn.commit()
     conn.close()
     return rows
+
 
 # --------- Ingest endpoint (JMeter posts here) ----------
 @app.route("/metrics", methods=["POST"])
@@ -499,7 +506,30 @@ def dashboard():
         <select id="labelSelect" class="form-select form-select-sm" style="width:auto;display:inline-block;">
           <option value="">All</option>
         </select>
+        <button id="deleteTestBtn" class="btn btn-danger" Disabled>Delete Test</button>                          
+        <button id="customSqlBtn" class="btn btn-primary">CustomQery</button>
         </div>
+        <!-- SQL Query Modal -->
+<div class="modal fade" id="customSqlModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content bg-dark text-light">
+      <div class="modal-header">
+        <h5 class="modal-title">Run Custom SQL Query</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <textarea id="sqlQuery" class="form-control bg-dark text-light" rows="5"
+          placeholder="Enter SQL query here..."></textarea>
+        <button id="runSqlBtn" class="btn btn-primary mt-2">Run Query</button>
+        <div id="sqlResultContainer" class="mt-3"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FontAwesome & Bootstrap -->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>                          
     </div>
 
     <div class="row g-3">
@@ -516,7 +546,7 @@ def dashboard():
       <div class="col-lg-6">
         <div class="card p-3">
           <div class="d-flex justify-content-between">
-            <h5>Active Threads (avg per sec)</h5>
+            <h5>Active Threads (per sec)</h5>
           </div>
           <canvas id="threadChart" height="160"></canvas>
           <div id="rangeDisplayThreads" class="text-secondary small mt-2 text-end"></div>
@@ -608,17 +638,86 @@ def dashboard():
     <div id="rangeDisplayTotalTps" class="text-secondary small mt-2 text-end"></div>
   </div>
 </div>
-      <div class="col-12 text-end">
-        <a id="downloadSnapshot" class="btn btn-outline-primary">Download Hard-coded HTML Snapshot</a>
-      </div>
+      
     </div>
   </div>
   <div id="loadingStatus" class="position-absolute top-0 end-0 m-3" style="z-index:1000;">
   <span class="badge bg-success" style="display:none;">Loading completed</span>
 </div>
+<script>
+document.getElementById('customSqlBtn').addEventListener('click', function() {
+  new bootstrap.Modal(document.getElementById('customSqlModal')).show();
+});
+
+document.getElementById('runSqlBtn').addEventListener('click', async function() {
+  const query = document.getElementById('sqlQuery').value;
+  if (!query.trim()) return alert("Please enter an SQL query");
+
+  const resp = await fetch('/CustomQueryDatabase', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query })
+  });
+
+  const data = await resp.json();
+  const container = document.getElementById('sqlResultContainer');
+  container.innerHTML = "";
+
+  if (data.error) {
+    container.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+    return;
+  }
+
+  // Build dark table
+  let html = `<table class="table table-dark table-striped"><thead><tr>`;
+  if (data.columns && data.columns.length > 0) {
+    html += data.columns.map(c => `<th>${c}</th>`).join("");
+    html += "</tr></thead><tbody>";
+    data.rows.forEach(r => {
+      html += "<tr>" + r.map(val => `<td>${val}</td>`).join("") + "</tr>";
+    });
+    html += "</tbody></table>";
+  } else {
+    html = "<div class='alert alert-warning'>No rows returned</div>";
+  }
+  container.innerHTML = html;
+});
+</script>
 
 <script>
-  
+  // ----------- delete button 
+  $('#deleteTestBtn').on('click', async function() {
+    const testId = $('#testIdSelect').val();
+    if (!testId) {
+        alert("Please select a Test ID to delete.");
+        return;
+    }
+    if (!confirm(`Are you sure you want to delete all rows for Test ID: ${testId}?`)) return;
+
+    const resp = await fetch('/api/delete_testid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ test_id: testId })
+    });
+
+    const result = await resp.json();
+    alert(result.message);
+
+    // Reload Test IDs after delete
+    await loadTestIds();
+
+    // Clear current selection if the deleted ID is gone
+    const testIds = $('#testIdSelect option').map(function() { return this.value; }).get();
+    if (!testIds.includes(testId)) {
+        $('#testIdSelect').val(testIds.length > 0 ? testIds[0] : "");
+    }
+
+    // Refresh dashboard
+    await refreshAll();
+  });
+
+    
+
 
                                   
   // ---------- Utilities ----------
@@ -792,7 +891,8 @@ let totalTpsChart = new Chart(document.getElementById('totalTpsChart'), {
     errorPctChart.update();
     }
 
-  async function loadTPS() {
+  
+async function loadTPS() {
     const { start, end, duration, mode } = getRangeParams();
     const testId = $('#testIdSelect').val();
     let url = '/api/total_tps?';
@@ -811,6 +911,7 @@ let totalTpsChart = new Chart(document.getElementById('totalTpsChart'), {
     tpsChart.data.datasets[0].data = data.tps;
     tpsChart.update();
   }
+                                
 
   async function loadThreads() {
     const {start, end} = getRangeParams();
@@ -917,40 +1018,42 @@ async function loadRespTime() {
   if(start) url += 'start=' + start + '&';
   if(end) url += 'end=' + end + '&';
   const data = await (await fetch(url)).json();
-  const tbody = $('#errTable tbody').empty();
-  data.forEach(r => {
-    tbody.append(`<tr><td>${r.label}</td><td>${r.status}</td><td>${r.count}</td><td>${r.message||''}</td></tr>`);
-  });
-  }
-  async function loadTotalTPS() {
-  const { start, end, duration, mode, tz } = getRangeParams();
-  let url = '/api/total_tps?';
-  if (mode === 'duration') {
-      url += 'window=' + duration + '&end=' + end;
-  } else if (mode === 'range') {
-      url += 'window=' + Math.max(60, end - start + 1) + '&end=' + end;
+
+  // Initialize DataTable only once
+  let table;
+  if (!$.fn.dataTable.isDataTable('#errTable')) {
+    table = $('#errTable').DataTable({ pageLength: 10 });
   } else {
-      url += 'window=60';
+    table = $('#errTable').DataTable();
+    table.clear();
   }
-  const resp = await fetch(url);
-  const data = await resp.json();
-  totalTpsChart.data.labels = data.timestamps.map(s => moment.unix(s).tz(tz).format('HH:mm:ss A'));
-  totalTpsChart.data.datasets[0].data = data.tps;
-  totalTpsChart.update();
-  $('#rangeDisplayTotalTps').text($('#rangeDisplayAgg').text());
+  data.forEach(r => {
+    table.row.add([r.label, r.status, r.count, r.message||'']);
+  });
+  table.draw();
 }
-  async function loadSuccess() {
-    const {start,end} = getRangeParams();
-    const testId = getTestId();
-    let url = '/api/success?test_id=' + encodeURIComponent(testId) + '&';
-    if(start) url += 'start=' + start + '&';
-    if(end) url += 'end=' + end + '&';
-    const data = await (await fetch(url)).json();
-    const tbody = $('#succTable tbody').empty();
-    data.forEach(r => {
-      tbody.append(`<tr><td>${r.label}</td><td>${r.count}</td><td>${r.avg}</td><td>${r.min}</td><td>${r.max}</td><td>${r.p90}</td></tr>`);
-    });
+
+async function loadSuccess() {
+  const {start,end} = getRangeParams();
+  const testId = getTestId();
+  let url = '/api/success?test_id=' + encodeURIComponent(testId) + '&';
+  if(start) url += 'start=' + start + '&';
+  if(end) url += 'end=' + end + '&';
+  const data = await (await fetch(url)).json();
+
+  // Initialize DataTable only once
+  let table;
+  if (!$.fn.dataTable.isDataTable('#succTable')) {
+    table = $('#succTable').DataTable({ pageLength: 10 });
+  } else {
+    table = $('#succTable').DataTable();
+    table.clear();
   }
+  data.forEach(r => {
+    table.row.add([r.label, r.count, r.avg, r.min, r.max, r.p90]);
+  });
+  table.draw();
+}
 
   async function refreshAll() {
     $('#loadingStatus span').hide();
@@ -1045,6 +1148,12 @@ async function loadRespTime() {
     testIds.forEach(id => {
         sel.append(`<option value="${id}">${id}</option>`);
     });
+    // If no test IDs exist, keep button disabled
+    if (testIds.length === 0) {
+        $('#deleteTestBtn').prop('disabled', true);
+    } else {
+        $('#deleteTestBtn').prop('disabled', false);
+    }                              
 }
 $(document).ready(function() {
     loadTestIds();
@@ -1062,6 +1171,15 @@ def api_testids():
     rows = run_query("SELECT DISTINCT test_id FROM jmeter_samples")
     return jsonify([r[0] for r in rows])
 
+@app.route("/api/delete_testid", methods=["POST"])
+def delete_testid():
+    data = request.get_json()
+    test_id = data.get("test_id")
+    if not test_id:
+        return jsonify({"message": "No test_id provided"}), 400
+
+    run_query("DELETE FROM jmeter_samples WHERE test_id = ?", (test_id,))
+    return jsonify({"message": f"All rows with test_id '{test_id}' deleted."})
 
 @app.route("/api/response_times", methods=["GET"])
 def api_response_times():
@@ -1095,6 +1213,25 @@ def api_response_times():
         grouped[label]["response_times"].append(rt)
 
     return jsonify(grouped)
+@app.route("/CustomQueryDatabase", methods=["POST"])
+def custom_query_database():
+    data = request.get_json()
+    query = data.get("query")
+
+    try:
+        # Run the query
+        rows = run_query(query)
+
+        # Get column names
+        conn = sqlite3.connect(DB_FILE)   # change filename if needed
+        cur = conn.cursor()
+        cur.execute(query)
+        columns = [desc[0] for desc in cur.description] if cur.description else []
+        conn.close()
+
+        return jsonify({"columns": columns, "rows": rows})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 @app.route("/api/total_tps", methods=["GET"])
 def api_total_tps():
